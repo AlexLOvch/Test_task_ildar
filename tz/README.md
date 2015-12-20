@@ -10,6 +10,7 @@ Notes:
   3. Looks like should be: "serialize :additional_data (and/or :additional_data_old), JSON" - ignored - b/c of in black list - does not export and import
   4. Most likely: device has_one contact, device has_one model and device has_one carrier_base_id - ignored - same thing as  business_account_id - value should be replace w/ id in case these models will have relations with device(through reflections)
   5. Don't clear w/ device_model_mapping_id - maybe another relation - ignored - also used as string
-  6.
+  6. track! for ActiveRecord::Base stubbed - looks like used for logging device import
+  7. @customer stubbed(probably setted by InheritedResources::Base - inheritedresources ignore b/c of irrelevant to refactoring task)
 
 

@@ -214,8 +214,8 @@ class DevicesController < ApplicationController
       #
       # ALO
       # check for such device is present - if flag  clear_existing_data setted up - then add all other device lines to deleted list
-      #
-      lines = @customer.devices.to_a
+      #                        for  spec
+      lines = @customer.devices.reload.to_a
       lines.each do |line|
         if data.has_key?(line.number)
           updated_lines[line.number] = line
