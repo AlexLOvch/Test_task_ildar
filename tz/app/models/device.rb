@@ -43,6 +43,19 @@ class Device < ActiveRecord::Base
   end
 
 
+  def self.invalid_accounting_types_in_csv(contents, lookups)
+    errors = {}
+    row = CSV.parse_line(contents, headers: true, encoding: 'UTF-8')
+    row.headers.each do |header|
+      if header =~ /accounting_categories\[([^\]]+)\]/ and !lookups.key?(header)
+        errors['General'] = ["'#{$1}' is not a valid accounting type"]
+        break
+      end
+    end
+    errors
+  end
+
+
   def self.import(contents, customer, current_user, clear_existing_data)
     data          = {}
     updated_lines = {}
@@ -51,126 +64,63 @@ class Device < ActiveRecord::Base
     errors = {}
     flash = {}
 
-    lookups.merge!(lookup_relation_ids_by_customer(customer))
     lookups.merge!(customer.lookup_accounting_category)
-    #
-    # ALO
-    # validation accounting_categories type (inside col names)
-    #
-    begin
-      #
-      # ALO
-      # don't needed to go through rows - in case all ok it will be spend time
-      #
-      CSV.parse(contents, headers: true, encoding: 'UTF-8').each do |row|
-        row.headers.each do |header|
-          if header =~ /accounting_categories\[([^\]]+)\]/
-            unless lookups.key?(header)
-              raise "'#{$1}' is not a valid accounting type"
-            end
-          end
-        end
-        break
-      end
-    rescue => e
-      errors['General'] = [e.message]
-    end
 
+    errors = invalid_accounting_types_in_csv(contents, lookups)
+    return [flash, errors] if errors.any?
 
-
-    #
-    # ALO
-    # errors.any? - looks better - but check for speed.
-    #
-    if errors.length.nonzero?
-      return [flash, errors]
-    end
+    lookups.merge!(lookup_relation_ids_by_customer(customer))
 
     begin
-      CSV.parse(contents, headers: true, encoding: 'UTF-8').each_with_index do |p, idx|
-        accounting_categories = []
-        hsh = p.to_hash.merge(customer_id: customer.id)
+      CSV.parse(contents, headers: true, encoding: 'UTF-8').each_with_index do |parsed_line, idx|
+        line_hash = parsed_line.to_hash.merge(customer_id: customer.id)
 
-        if '' == p['number'].to_s.strip
+        if parsed_line['number'].to_s.strip.empty?
           (errors['General'] ||= []) << "An entry around line #{idx} has no number"
           next
         end
 
-        #
-        # ALO
-        # just remove non digital values from number
-        #
-
         # Hardcode the number, just to make sure we don't run into issues
-        hsh['number'] = p['number'] = hsh['number'].gsub(/\D+/,'')
+        dev_number = line_hash['number'] = line_hash['number'].gsub(/\D+/,'')
 
-
-        #
-        # ALO
-        # check for duplicate line(by number) in the uploaded file
-        #
-
-        if data[p['number']]
-          (errors[p['number']] ||= []) << "Is a duplicate entry"
+        if data[dev_number]
+          (errors[dev_number] ||= []) << "Is a duplicate entry"
           next
         end
 
-        #
-        # ALO
         # remove ' =" " ' from values
-        #
-        hsh = Hash[hsh.map{ |k,v| [k, v =~ /^="(.*?)"/ ? $1 : v] }]
+        line_hash.each{ |k,v| line_hash[k] = v =~ /^="(.*?)"/ ? $1 : v }
 
+        # converts string t or f into boolean
+                                           # This is postgres-specific
+        line_hash.each{ |k,v| line_hash[k] = ['t','f'].include?(v) ? (v == 't') : v }
 
-        #
-        # ALO
-        # check for existent accounting_category code
         # move accounting_category to accounting_categories and deletes col with []
-        # replace value w/ value from lookup - id instead of name
-        #
+        # replace value w/  id instead of name
+        accounting_categories = []
+        line_hash.dup.select{|k,_| lookups.key?(k)}.each do |k,v|
+          if k =~ /accounting_categories\[(.*?)\]/
+            accounting_category_name = $1
+            accounting_category_code = lookups[k][v.to_s.strip]
 
-
-        hsh.dup.each do |k,v|
-          if lookups.key?(k)
-            #
-            # ALO
-            # let's use k =~ /accounting_categories\[(.*?)\]/  and $1 inside
-            #
-            if k =~ /accounting_categories/
-              accounting_category_name = k.gsub(/accounting_categories\[(.*?)\]/, '\1')
-              val = lookups[k][v.to_s.strip]
-
-              if !val
-                (errors[p['number']] ||= []) << "New \"#{accounting_category_name}\" code: \"#{v.to_s.strip}\""
-              else
-                accounting_categories << lookups[k][v.to_s.strip]
-              end
-              hsh.delete(k)
+            if accounting_category_code
+              accounting_categories << lookups[k][v.to_s.strip]
             else
-              hsh[k] = lookups[k][v]
+              (errors[dev_number] ||= []) << "New \"#{accounting_category_name}\" code: \"#{v.to_s.strip}\""
             end
-          end
-          #
-          # ALO
-          # converts string t or f into boolean
-          #
-          if v == 't' || v == 'f'
-            # This is postgres-specific
-            hsh[k] = (v == 't')
+            line_hash.delete(k)
+          else
+            line_hash[k] = lookups[k][v]
           end
         end
 
-        #
-        # ALO
-        # sets ids for  accounting_category relation
-        # and prepare record
-        #
-        hsh['accounting_category_ids'] = accounting_categories unless accounting_categories.empty?
+        # sets ids for accounting_category relation
+        line_hash['accounting_category_ids'] = accounting_categories unless accounting_categories.empty?
         #
         # ALO
         # put into data w/ number key all not emty keys and data (why key maybe empty?(column w/o header?))
         #
-        data[p['number']] = hsh.select{ |k,v| k }
+        data[dev_number] = line_hash.select{ |k,v| k }
       end
     rescue => e
       errors['General'] = [e.message]
@@ -211,15 +161,15 @@ class Device < ActiveRecord::Base
       # ALO
       # Maybe find_or_create should be better then this stuf...
       #
-      updated_lines.each do |number, line|
-        line.assign_attributes(data[number])
+      updated_lines.each do |dev_number, line|
+        line.assign_attributes(data[dev_number])
       end
 
 
-      data.each do |number, attributes|
-        unless updated_lines[number]
-          updated_lines[number] = new
-          updated_lines[number].assign_attributes(attributes)
+      data.each do |dev_number, attributes|
+        unless updated_lines[dev_number]
+          updated_lines[dev_number] = new
+          updated_lines[dev_number].assign_attributes(attributes)
         end
       end
 
@@ -227,9 +177,9 @@ class Device < ActiveRecord::Base
       # ALO
       # validation of each line
       #
-      updated_lines.each do |number, line|
+      updated_lines.each do |dev_number, line|
         unless line.valid?
-          errors[number] = line.errors.full_messages
+          errors[dev_number] = line.errors.full_messages
         end
       end
 
@@ -254,7 +204,7 @@ class Device < ActiveRecord::Base
 
 
       if errors.empty?
-        updated_lines.each do |number, line|
+        updated_lines.each do |_, line|
           line.track!(created_by: current_user, source: "Bulk Import") { line.save(validate: false) }
         end
 
