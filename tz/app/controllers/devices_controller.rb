@@ -14,7 +14,7 @@ class DevicesController < ApplicationController
     # automatically close and GC it if we don't
     import_file = params[:import_file]
     unless  import_file
-      flash[:error] = 'Please upload a file to be imported' 
+      flash[:error] = 'Please upload a file to be imported'
       return
     end
 
@@ -25,10 +25,7 @@ class DevicesController < ApplicationController
     unless @customer.business_accounts.any?
       @warnings << 'This customer does not have any business accounts.  Any device import will fail to process correctly.'
     end
-    #
-    # ALO
-    # ask or note - if file can be huge it's not good idea to read whole file
-    #
+
     contents = import_file.tempfile.read.encode(invalid: :replace, replace: '')
 
     if request.post?

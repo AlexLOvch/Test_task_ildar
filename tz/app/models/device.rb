@@ -21,6 +21,28 @@ class Device < ActiveRecord::Base
   end
 
 
+  def self.lookup_relation_ids_by_customer(customer)
+    lookups = {}
+    import_export_columns.select{|col| col.ends_with?('_id')}.each do |col|
+      case col
+      when 'device_make_id'  then lookups[col] = Hash[DeviceMake.pluck(:name, :id)]
+      when 'device_model_id' then lookups[col] = Hash[DeviceModel.pluck(:name, :id)]
+      else
+        reflections.each do |k, reflection|
+          if reflection.foreign_key == col
+            method = reflection.plural_name.to_sym
+            if customer.respond_to?(method)
+              accessor = reflection.klass.respond_to?(:export_key) ? reflection.klass.send(:export_key) : 'name'
+              lookups[col] = Hash[customer.send(method).pluck(accessor, :id)]
+            end
+          end
+        end
+      end
+    end
+    lookups
+  end
+
+
   def self.import(contents, customer, current_user, clear_existing_data)
     data          = {}
     updated_lines = {}
@@ -29,37 +51,8 @@ class Device < ActiveRecord::Base
     errors = {}
     flash = {}
 
-    #
-    # ALO
-    # PREPARE lookups - gets id and names for device relations and customer accounting_types
-    #
-    import_export_columns.each do |col|
-      if col =~ /^(\w+)_id/
-        case col
-        when 'device_make_id'  then lookups[col] = Hash[DeviceMake.pluck(:name, :id)]
-        when 'device_model_id' then lookups[col] = Hash[DeviceModel.pluck(:name, :id)]
-        else
-          reflections.each do |k, reflection|
-            if reflection.foreign_key == col
-              puts reflection.inspect
-              method = reflection.plural_name.to_sym
-              if customer.respond_to?(method)
-                accessor = reflection.klass.respond_to?(:export_key) ? reflection.klass.send(:export_key) : 'name'
-                lookups[col] = Hash[customer.send(method).pluck(accessor, :id)]
-              end
-            end
-          end
-        end
-      end
-    end
-
-      #
-      # ALO
-      # add for customer customer_accounting_categories can be helpful here
-    customer.accounting_types.each do |at|
-      lookups["accounting_categories[#{at.name}]"] = Hash[Hash[at.accounting_categories.pluck(:name, :id)].map{ |k,v| [k.strip, v] }]
-    end
-
+    lookups.merge!(lookup_relation_ids_by_customer(customer))
+    lookups.merge!(customer.lookup_accounting_category)
     #
     # ALO
     # validation accounting_categories type (inside col names)
