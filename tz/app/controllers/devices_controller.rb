@@ -255,6 +255,8 @@ class DevicesController < ApplicationController
         #
         # ALO
         # check for number existent for other user and does not canceled
+        # DOUBLE CHECK ???
+        # OR DEFAULT SCOPE SOMEHOW PREVENTS THIS CHECK ABOVE???
         #
         number_conditions = []
         updated_lines.each do |number, device|

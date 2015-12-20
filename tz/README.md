@@ -12,5 +12,6 @@ Notes:
   5. Don't clear w/ device_model_mapping_id - maybe another relation - ignored - also used as string
   6. track! for ActiveRecord::Base stubbed - looks like used for logging device import
   7. @customer stubbed(probably setted by InheritedResources::Base - inheritedresources ignore b/c of irrelevant to refactoring task)
+  8. Some device fields should be boolean(like inactive, in_sespension, etc). Left string - no difference for this refactoring.
 
 
