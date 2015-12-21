@@ -127,54 +127,45 @@ class Device < ActiveRecord::Base
 
     data, errors = parse_csv(contents, lookups)
 
-    # validate the devices w/ same numbers do not belong other customer
-    duplicate_numbers = unscoped.where(number: data.select{|_,v|v['status'] != 'cancelled'}.keys).where.not(status: 'cancelled').where.not(customer_id: customer.id)
-    duplicate_numbers.each do |device|
-        (errors[device.number] ||= []) << "Duplicate number. The number can only be processed once, please ensure it's on the active account number."
-    end
-
-    return [flash, errors] if errors.any?
-
-    updated_devices = {}
-    deleted_devices_ids  = []
-
-    #find updated and deleted devices
-    devices = customer.devices.reload.to_a
-    devices.each do |device|
-      if data.has_key?(device.number)
-        updated_devices[device.number] = device
-      elsif clear_existing_data
-        deleted_devices_ids << device.id
-      end
-    end
-
     transaction do
-      updated_devices.each do |dev_number, device|
-        device.assign_attributes(data[dev_number].merge(customer_id: customer.id))
+      # validate the devices w/ same numbers do not belong other customer
+      duplicate_numbers = unscoped.where(number: data.select{|_,v|v['status'] != 'cancelled'}.keys).where.not(status: 'cancelled').where.not(customer_id: customer.id)
+      duplicate_numbers.each do |device|
+          (errors[device.number] ||= []) << "Duplicate number. The number can only be processed once, please ensure it's on the active account number."
       end
 
-      data.each do |dev_number, attributes|
-        unless updated_devices[dev_number]
-          updated_devices[dev_number] = new
-          updated_devices[dev_number].assign_attributes(attributes.merge(customer_id: customer.id))
-        end
+      return [flash, errors] if errors.any?
+
+      updated_devices = customer.devices.where(number: data.keys).to_a
+      deleted_devices_ids = clear_existing_data ? customer.devices.map(&:id) - updated_devices.map(&:id) : []
+
+      updated_devices.each do |device|
+        device.assign_attributes(data[device.number].merge(customer_id: customer.id))
       end
 
-      updated_devices.each do |dev_number, device|
+      created_devices = []
+      updated_devices_numbers = updated_devices.map(&:number)
+      data.select{|k,_| !updated_devices_numbers.include?(k) }.each do |dev_number, attributes|
+        created_devices << new(attributes.merge(customer_id: customer.id))
+      end
+
+      updated_or_created_devices = (updated_devices + created_devices)
+
+      updated_or_created_devices.each do |device|
         unless device.valid?
-          errors[dev_number] = device.errors.full_messages
+          errors[device.number] = device.errors.full_messages
         end
       end
 
       raise ActiveRecord::Rollback if errors.any?
 
-      updated_devices.each do |_, device|
+      updated_or_created_devices.each do |device|
         device.track!(created_by: current_user, source: "Bulk Import") { device.save(validate: false) }
       end
 
-      Device.where(id: deleted_devices_ids).delete_all if clear_existing_data
+      Device.where(id: deleted_devices_ids).delete_all if deleted_devices_ids.any?
 
-      flash[:notice] = "Import successfully completed. #{updated_devices.length} lines updated/added. #{deleted_devices_ids.length} lines removed."
+      flash[:notice] = "Import successfully completed. #{updated_or_created_devices.length} lines updated/added. #{deleted_devices_ids.length} lines removed."
     end
     [flash, errors]
   end
