@@ -61,12 +61,17 @@ RSpec.describe DevicesController, :type => :controller do
       expect(Device.count).to eq 0
     end
 
-    it 'add error message and do not import data in case at least one line  has duplicated number ' do
+    it 'add error message and do not import data in case has duplicated numbers' do
       post :import, import_file: get_uploaded_file('data_dublicated_number')
-      expect(controller.instance_variable_get(:@errors).values).to include(['Is a duplicate entry'])
+      expect(controller.instance_variable_get(:@errors)).to include({"5879814504" => ['Is a duplicate entry'], "4038283663" => ['Is a duplicate entry']})
       expect(Device.count).to eq 0
     end
 
+    it 'add error message and do not import data in case new or updated device is not valid' do
+      post :import, import_file: get_uploaded_file('data_invalid_number')
+      expect(controller.instance_variable_get(:@errors)).to include({"4038" => ["Number is too short (minimum is 5 characters)"], "5879" => ["Number is too short (minimum is 5 characters)"]})
+      expect(Device.count).to eq 0
+    end
 
     it 'add error message and do not import data in case at least one device number already present for other customer' do
       Device.create(customer_id: 2, number: '5879814504')

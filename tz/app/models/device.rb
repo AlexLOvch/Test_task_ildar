@@ -2,6 +2,8 @@ class Device < ActiveRecord::Base
   belongs_to :customer
   has_and_belongs_to_many :accounting_categories
 
+  validates :number, length: { minimum: 5 }
+
   def self.import_export_columns
     blacklist = %w{
       customer_id
@@ -102,8 +104,8 @@ class Device < ActiveRecord::Base
         # sets ids for accounting_category relation
         row_hash['accounting_category_ids'] = accounting_categories unless accounting_categories.empty?
 
-        # (looks like key maybe empty?(column w/o header?))
-        data[dev_number] = row_hash.select{ |k,v| k }
+                                    #(looks like key maybe empty?(column w/o header?))
+        data[dev_number] = row_hash.select{ |k,_| k }
       end
     rescue => e
       errors['General'] = [e.message]
@@ -112,14 +114,10 @@ class Device < ActiveRecord::Base
   end
 
   def self.import(contents, customer, current_user, clear_existing_data)
-    data          = {}
-    updated_lines = {}
-    lookups       = {}
-    delete_lines  = []
-    errors = {}
-    flash = {}
+    errors        = {}
+    flash         = {}
 
-    lookups.merge!(customer.lookup_accounting_category)
+    lookups = customer.lookup_accounting_category
 
     errors = invalid_accounting_types_in_csv(contents, lookups)
     return [flash, errors] if errors.any?
@@ -128,14 +126,10 @@ class Device < ActiveRecord::Base
 
     data, errors = parse_csv(contents, lookups)
 
-    data.each{|k,v| data[k] = v.merge(customer_id: customer.id)}
-
-    #
     # ALO
     # validate the devices w/ same numbers do not belong other customer
     # (number should be uniq for not cancelled device - maybe validation here)
-    #
-    duplicate_numbers = where(number: data.keys).where.not(customer_id: customer.id)
+    duplicate_numbers = unscoped.where(number: data.keys).where.not(customer_id: customer.id)
     duplicate_numbers.each do |device|
       if !device.cancelled? && data[device.number]['status'] != 'cancelled'
         (errors[device.number] ||= []) << "Duplicate number. The number can only be processed once, please ensure it's on the active account number."
@@ -146,8 +140,9 @@ class Device < ActiveRecord::Base
     # Shortcut here to get basic errors out of the way
     return [flash, errors] if errors.any?
 
-    #
-    # ALO
+    updated_lines = {}
+    delete_lines  = []
+
     # check for such device is present - if flag  clear_existing_data setted up - then add all other device lines to deleted list
     #                        for  spec
     lines = customer.devices.reload.to_a
@@ -166,14 +161,14 @@ class Device < ActiveRecord::Base
       # Maybe find_or_create should be better then this stuf...
       #
       updated_lines.each do |dev_number, line|
-        line.assign_attributes(data[dev_number])
+        line.assign_attributes(data[dev_number].merge(customer_id: customer.id))
       end
 
 
       data.each do |dev_number, attributes|
         unless updated_lines[dev_number]
           updated_lines[dev_number] = new
-          updated_lines[dev_number].assign_attributes(attributes)
+          updated_lines[dev_number].assign_attributes(attributes.merge(customer_id: customer.id))
         end
       end
 
@@ -187,26 +182,6 @@ class Device < ActiveRecord::Base
         end
       end
 
-      #
-      # ALO
-      # check for number existent for other user and does not canceled
-      # DOUBLE CHECK ???
-      # OR DEFAULT SCOPE SOMEHOW PREVENTS THIS CHECK ABOVE???
-      #
-      number_conditions = []
-      updated_lines.each do |number, device|
-        number_conditions << "(number = '#{number}' AND status <> 'cancelled')" unless device.cancelled?
-      end
-
-      if number_conditions.size.nonzero?
-        invalid_devices = unscoped.where("(#{number_conditions.join(' OR ')}) AND customer_id != ?", customer.id)
-        invalid_devices.each do |device|
-          (errors[device.number] ||= []) << "Already in the system as an active number"
-        end
-      end
-
-
-
       if errors.empty?
         updated_lines.each do |_, line|
           line.track!(created_by: current_user, source: "Bulk Import") { line.save(validate: false) }
@@ -217,8 +192,6 @@ class Device < ActiveRecord::Base
         # convert to one request delete_all
         #
         delete_lines.each{ |line| line.delete } if clear_existing_data
-
-
 
         flash[:notice] = "Import successfully completed. #{updated_lines.length} lines updated/added. #{delete_lines.length} lines removed."
       else

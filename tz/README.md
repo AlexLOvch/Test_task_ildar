@@ -13,5 +13,6 @@ Notes:
   6. track! for ActiveRecord::Base stubbed - looks like used for logging device import
   7. @customer stubbed(probably setted by InheritedResources::Base - inheritedresources ignore b/c of irrelevant to refactoring task)
   8. Some device fields should be boolean(like inactive, in_sespension, etc). Left string - no difference for this refactoring.
+  9. As far as any device updated or created checks for valid? - length validation added for device.number(just for test validation checks)
 
 
