@@ -56,6 +56,61 @@ class Device < ActiveRecord::Base
   end
 
 
+  def self.parse_csv(contents, lookups)
+    data = {}
+    errors = {}
+    begin
+      CSV.parse(contents, headers: true, encoding: 'UTF-8').each_with_index do |parsed_row, idx|
+        if parsed_row['number'].to_s.strip.empty?
+          (errors['General'] ||= []) << "An entry around line #{idx} has no number"
+          next
+        end
+        row_hash = parsed_row.to_hash
+        # Hardcode the number, just to make sure we don't run into issues
+        dev_number = row_hash['number'] = row_hash['number'].gsub(/\D+/,'')
+
+        if data[dev_number]
+          (errors[dev_number] ||= []) << "Is a duplicate entry"
+          next
+        end
+        # remove ' =" " ' from values
+        row_hash.each{ |k,v| row_hash[k] = v =~ /^="(.*?)"/ ? $1 : v }
+
+        # converts string t or f into boolean
+                                           # This is postgres-specific
+        row_hash.each{ |k,v| row_hash[k] = ['t','f'].include?(v) ? (v == 't') : v }
+
+        # move accounting_category to accounting_categories and deletes col with []
+        # replace value(name) w/  id(from lookups)
+        accounting_categories = []
+        row_hash.dup.select{|k,_| lookups.key?(k)}.each do |k,v|
+          if k =~ /accounting_categories\[(.*?)\]/
+            accounting_category_name = $1
+            accounting_category_code = lookups[k][v.to_s.strip]
+
+            if accounting_category_code
+              accounting_categories << lookups[k][v.to_s.strip]
+            else
+              (errors[dev_number] ||= []) << "New \"#{accounting_category_name}\" code: \"#{v.to_s.strip}\""
+            end
+            row_hash.delete(k)
+          else
+            row_hash[k] = lookups[k][v]
+          end
+        end
+
+        # sets ids for accounting_category relation
+        row_hash['accounting_category_ids'] = accounting_categories unless accounting_categories.empty?
+
+        # (looks like key maybe empty?(column w/o header?))
+        data[dev_number] = row_hash.select{ |k,v| k }
+      end
+    rescue => e
+      errors['General'] = [e.message]
+    end
+    [data, errors]
+  end
+
   def self.import(contents, customer, current_user, clear_existing_data)
     data          = {}
     updated_lines = {}
@@ -71,60 +126,9 @@ class Device < ActiveRecord::Base
 
     lookups.merge!(lookup_relation_ids_by_customer(customer))
 
-    begin
-      CSV.parse(contents, headers: true, encoding: 'UTF-8').each_with_index do |parsed_line, idx|
-        line_hash = parsed_line.to_hash.merge(customer_id: customer.id)
+    data, errors = parse_csv(contents, lookups)
 
-        if parsed_line['number'].to_s.strip.empty?
-          (errors['General'] ||= []) << "An entry around line #{idx} has no number"
-          next
-        end
-
-        # Hardcode the number, just to make sure we don't run into issues
-        dev_number = line_hash['number'] = line_hash['number'].gsub(/\D+/,'')
-
-        if data[dev_number]
-          (errors[dev_number] ||= []) << "Is a duplicate entry"
-          next
-        end
-
-        # remove ' =" " ' from values
-        line_hash.each{ |k,v| line_hash[k] = v =~ /^="(.*?)"/ ? $1 : v }
-
-        # converts string t or f into boolean
-                                           # This is postgres-specific
-        line_hash.each{ |k,v| line_hash[k] = ['t','f'].include?(v) ? (v == 't') : v }
-
-        # move accounting_category to accounting_categories and deletes col with []
-        # replace value w/  id instead of name
-        accounting_categories = []
-        line_hash.dup.select{|k,_| lookups.key?(k)}.each do |k,v|
-          if k =~ /accounting_categories\[(.*?)\]/
-            accounting_category_name = $1
-            accounting_category_code = lookups[k][v.to_s.strip]
-
-            if accounting_category_code
-              accounting_categories << lookups[k][v.to_s.strip]
-            else
-              (errors[dev_number] ||= []) << "New \"#{accounting_category_name}\" code: \"#{v.to_s.strip}\""
-            end
-            line_hash.delete(k)
-          else
-            line_hash[k] = lookups[k][v]
-          end
-        end
-
-        # sets ids for accounting_category relation
-        line_hash['accounting_category_ids'] = accounting_categories unless accounting_categories.empty?
-        #
-        # ALO
-        # put into data w/ number key all not emty keys and data (why key maybe empty?(column w/o header?))
-        #
-        data[dev_number] = line_hash.select{ |k,v| k }
-      end
-    rescue => e
-      errors['General'] = [e.message]
-    end
+    data.each{|k,v| data[k] = v.merge(customer_id: customer.id)}
 
     #
     # ALO
