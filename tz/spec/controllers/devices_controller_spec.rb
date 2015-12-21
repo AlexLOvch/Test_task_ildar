@@ -73,11 +73,13 @@ RSpec.describe DevicesController, :type => :controller do
       expect(Device.count).to eq 0
     end
 
-    it 'add error message and do not import data in case at least one device number already present for other customer' do
-      Device.create(customer_id: 2, number: '5879814504')
-      post :import, import_file: get_uploaded_file('data1')
-      expect(controller.instance_variable_get(:@errors).values).to include(["Duplicate number. The number can only be processed once, please ensure it's on the active account number."])
-      expect(Device.count).to eq 1
+    it 'add error message and do not import data in case number already present for other customer' do
+      Device.create(customer_id: 2, number: '5879814504', status: 'active')
+      Device.create(customer_id: 2, number: '4038283663', status: 'active')
+      post :import, import_file: get_uploaded_file('data')
+      expect(controller.instance_variable_get(:@errors)).to include({"4038283663" => ["Duplicate number. The number can only be processed once, please ensure it's on the active account number."],
+                                                                     "5879814504" => ["Duplicate number. The number can only be processed once, please ensure it's on the active account number."]})
+      expect(Device.count).to eq 2
     end
 
     it 'does not add error message and import data in case duplicated number, but device has status canceled' do

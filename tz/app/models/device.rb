@@ -82,18 +82,18 @@ class Device < ActiveRecord::Base
                                            # This is postgres-specific
         row_hash.each{ |k,v| row_hash[k] = ['t','f'].include?(v) ? (v == 't') : v }
 
-        # move accounting_category to accounting_categories and deletes col with []
+        # move accounting_category to accounting_categories and deletes col
         # replace value(name) w/  id(from lookups)
         accounting_categories = []
         row_hash.dup.select{|k,_| lookups.key?(k)}.each do |k,v|
           if k =~ /accounting_categories\[(.*?)\]/
             accounting_category_name = $1
-            accounting_category_code = lookups[k][v.to_s.strip]
+            accounting_category_code_id = lookups[k][v.to_s.strip]
 
-            if accounting_category_code
-              accounting_categories << lookups[k][v.to_s.strip]
+            if accounting_category_code_id
+              accounting_categories << accounting_category_code_id
             else
-              (errors[dev_number] ||= []) << "New \"#{accounting_category_name}\" code: \"#{v.to_s.strip}\""
+              (errors[dev_number] ||= []) << "New \"#{accounting_category_name}\" code: \"#{v}\""
             end
             row_hash.delete(k)
           else
@@ -102,7 +102,7 @@ class Device < ActiveRecord::Base
         end
 
         # sets ids for accounting_category relation
-        row_hash['accounting_category_ids'] = accounting_categories unless accounting_categories.empty?
+        row_hash['accounting_category_ids'] = accounting_categories if accounting_categories.any?
 
                                     #(looks like key maybe empty?(column w/o header?))
         data[dev_number] = row_hash.select{ |k,_| k }
@@ -112,6 +112,7 @@ class Device < ActiveRecord::Base
     end
     [data, errors]
   end
+
 
   def self.import(contents, customer, current_user, clear_existing_data)
     errors        = {}
@@ -126,77 +127,54 @@ class Device < ActiveRecord::Base
 
     data, errors = parse_csv(contents, lookups)
 
-    # ALO
     # validate the devices w/ same numbers do not belong other customer
-    # (number should be uniq for not cancelled device - maybe validation here)
-    duplicate_numbers = unscoped.where(number: data.keys).where.not(customer_id: customer.id)
+    duplicate_numbers = unscoped.where(number: data.select{|_,v|v['status'] != 'cancelled'}.keys).where.not(status: 'cancelled').where.not(customer_id: customer.id)
     duplicate_numbers.each do |device|
-      if !device.cancelled? && data[device.number]['status'] != 'cancelled'
         (errors[device.number] ||= []) << "Duplicate number. The number can only be processed once, please ensure it's on the active account number."
-      end
     end
 
-
-    # Shortcut here to get basic errors out of the way
     return [flash, errors] if errors.any?
 
-    updated_lines = {}
-    delete_lines  = []
+    updated_devices = {}
+    deleted_devices_ids  = []
 
-    # check for such device is present - if flag  clear_existing_data setted up - then add all other device lines to deleted list
-    #                        for  spec
-    lines = customer.devices.reload.to_a
-    lines.each do |line|
-      if data.has_key?(line.number)
-        updated_lines[line.number] = line
+    #find updated and deleted devices
+    devices = customer.devices.reload.to_a
+    devices.each do |device|
+      if data.has_key?(device.number)
+        updated_devices[device.number] = device
       elsif clear_existing_data
-        delete_lines << line
+        deleted_devices_ids << device.id
       end
     end
 
     transaction do
-
-      #
-      # ALO
-      # Maybe find_or_create should be better then this stuf...
-      #
-      updated_lines.each do |dev_number, line|
-        line.assign_attributes(data[dev_number].merge(customer_id: customer.id))
+      updated_devices.each do |dev_number, device|
+        device.assign_attributes(data[dev_number].merge(customer_id: customer.id))
       end
-
 
       data.each do |dev_number, attributes|
-        unless updated_lines[dev_number]
-          updated_lines[dev_number] = new
-          updated_lines[dev_number].assign_attributes(attributes.merge(customer_id: customer.id))
+        unless updated_devices[dev_number]
+          updated_devices[dev_number] = new
+          updated_devices[dev_number].assign_attributes(attributes.merge(customer_id: customer.id))
         end
       end
 
-      #
-      # ALO
-      # validation of each line
-      #
-      updated_lines.each do |dev_number, line|
-        unless line.valid?
-          errors[dev_number] = line.errors.full_messages
+      updated_devices.each do |dev_number, device|
+        unless device.valid?
+          errors[dev_number] = device.errors.full_messages
         end
       end
 
-      if errors.empty?
-        updated_lines.each do |_, line|
-          line.track!(created_by: current_user, source: "Bulk Import") { line.save(validate: false) }
-        end
+      raise ActiveRecord::Rollback if errors.any?
 
-        #
-        # ALO
-        # convert to one request delete_all
-        #
-        delete_lines.each{ |line| line.delete } if clear_existing_data
-
-        flash[:notice] = "Import successfully completed. #{updated_lines.length} lines updated/added. #{delete_lines.length} lines removed."
-      else
-        raise ActiveRecord::Rollback
+      updated_devices.each do |_, device|
+        device.track!(created_by: current_user, source: "Bulk Import") { device.save(validate: false) }
       end
+
+      Device.where(id: deleted_devices_ids).delete_all if clear_existing_data
+
+      flash[:notice] = "Import successfully completed. #{updated_devices.length} lines updated/added. #{deleted_devices_ids.length} lines removed."
     end
     [flash, errors]
   end
@@ -205,6 +183,7 @@ class Device < ActiveRecord::Base
   def cancelled?
     status == 'cancelled'
   end
+
 
   def track!(params, &block)
     yield
