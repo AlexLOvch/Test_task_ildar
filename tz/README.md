@@ -1,3 +1,7 @@
+Task description can be found here: ./task_description.txt
+__________________
+
+
 Plan of the attack:
 1. Scaffold rails app
 2. Create all needed models
